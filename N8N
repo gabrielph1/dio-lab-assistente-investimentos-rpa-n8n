@@ -1,1 +1,175 @@
-
+{
+  "name": "Desafio MVP",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "b14aedc6-7ed0-478c-8629-2c1f52380cda",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.2,
+      "position": [
+        -224,
+        -128
+      ],
+      "id": "3d284e68-ed34-42b2-ac0e-8146c5d9c893",
+      "name": "Webhook",
+      "webhookId": "b14aedc6-7ed0-478c-8629-2c1f52380cda"
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ $json }}",
+        "options": {
+          "responseCode": 200
+        }
+      },
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "position": [
+        896,
+        -128
+      ],
+      "id": "4485616d-9d22-4068-85f1-4b702aaf82b6",
+      "name": "Respond to Webhook"
+    },
+    {
+      "parameters": {
+        "url": "https://digitalinnovationone.github.io/dio-lab-assistente-investimentos-rpa-n8n/data.csv",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        0,
+        -64
+      ],
+      "id": "c68876f9-0d53-4a2b-82b5-1f44cec7ba99",
+      "name": "HTTP Request"
+    },
+    {
+      "parameters": {
+        "jsCode": "// ============================================================\n// Nó Code do n8n — Processa CSV de investimentos\n// Entrada : saída do nó HTTP Request (CSV como texto)\n// Saída   : um único item contendo a lista completa de investimentos\n//           (cada investimento tem indice, mínimo normalizado e dados originais)\n// ============================================================\n\nfunction parseCSV(texto) {\n  const linhas = String(texto)\n    .split(/\\r?\\n/)\n    .map((l) => l.trim())\n    .filter((l) => l !== \"\");\n\n  if (linhas.length === 0) return [];\n\n  const headers = linhas[0].split(\",\").map((h) => h.trim());\n\n  return linhas.slice(1).map((linha) => {\n    // Split que respeita campos entre aspas (\"a,b,c\")\n    const valores = linha\n      .split(/,(?=(?:[^\"]*\"[^\"]*\")*[^\"]*$)/)\n      .map((v) => v.replace(/^\"|\"$/g, \"\").trim());\n\n    const obj = {};\n    headers.forEach((h, i) => {\n      obj[h] = valores[i] ?? \"\";\n    });\n    return obj;\n  });\n}\n\nfunction normalizaMoeda(valor) {\n  if (typeof valor === \"number\") return valor;\n  if (valor === null || valor === undefined) return 0;\n\n  let s = String(valor).trim();\n\n  // \"R$ 1.000,00\" -> \"1000.00\" -> 1000\n  // Regra brasileira: ponto = milhar, vírgula = decimal\n  s = s\n    .replace(/R\\$/gi, \"\")\n    .replace(/[-\\s]/g, \"\")\n    .replace(/\\./g, \"\")\n    .replace(\",\", \".\");\n\n  const n = parseFloat(s);\n  return Number.isFinite(n) ? n : 0;\n}\n\nfunction encontrarChaveMinimo(obj) {\n  return Object.keys(obj).find((k) => {\n    const n = k\n      .toLowerCase()\n      .normalize(\"NFD\")\n      .replace(/[\\u0300-\\u036f]/g, \"\");\n    return (\n      n.includes(\"minimo\") ||\n      n.includes(\"minima\") ||\n      n === \"min\"\n    );\n  });\n}\n\n// ---------- 1) Pegar o CSV como texto vindo do HTTP Request ----------\n// Caso seu n8n seja antigo, troque $input.first().json por items[0].json\nconst primeiroItem = $input.first().json;\n\nlet csv = primeiroItem.data ?? primeiroItem.body ?? primeiroItem;\n\n// Se o HTTP Request devolveu um Buffer (Response Format: File)\nif (typeof csv === \"object\" && csv !== null && Buffer.isBuffer(csv)) {\n  csv = csv.toString(\"utf8\");\n}\n\n// ---------- 2) Converter o texto em linhas/objetos ----------\nconst linhas = parseCSV(csv);\n\n// ---------- 3) Normalizar o \"mínimo\" para número e montar a lista ----------\nconst investimentos = linhas.map((linha, indice) => {\n  const chave = encontrarChaveMinimo(linha) || \"minimo\";\n\n  return {\n    indice, // 0, 1, 2...\n    ...linha,\n    minimo: normalizaMoeda(linha[chave]), // número pronto pra usar\n    [`${chave}_original`]: linha[chave] ?? \"\", // preserva o texto original (opcional)\n  };\n});\n\n// ---------- 4) Retornar a lista inteira em UM item ----------\n// Assim todos os próximos nós recebem a array completa de uma vez.\n// No próximo nó, acesse a lista com $json.investimentos.\nreturn [{ json: { investimentos } }];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        192,
+        -64
+      ],
+      "id": "8b0d9279-a745-49b8-b130-d1d45f120132",
+      "name": "Code in JavaScript"
+    },
+    {
+      "parameters": {
+        "mode": "combine",
+        "combineBy": "combineByPosition",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3.2,
+      "position": [
+        448,
+        -128
+      ],
+      "id": "a2c6c411-8cd9-4832-991b-e0b357410368",
+      "name": "Merge"
+    },
+    {
+      "parameters": {
+        "jsCode": "// ============================================================\n// Nó Code do n8n — Mensagem personalizada por cliente\n// Entrada : item bruto do webhook com:\n//           - body.clientes  -> lista de clientes\n//           - investimentos  -> lista de investimentos (nível raiz)\n// Saída   : um item por cliente, com o campo \"mensagem\" pronto\n// ============================================================\n\nconst itens = $input.all();\n\n// ---------- 1) Extrair clientes e investimentos ----------\n\nlet clientes = [];\nlet investimentos = [];\n\nfor (const item of itens) {\n  const dados = item.json;\n\n  // Clientes podem estar em body.clientes (item bruto do webhook)\n  if (dados.body && Array.isArray(dados.body.clientes)) {\n    clientes = clientes.concat(dados.body.clientes);\n  }\n  // Ou diretamente em dados.clientes\n  if (Array.isArray(dados.clientes)) {\n    clientes = clientes.concat(dados.clientes);\n  }\n\n  // Investimentos podem estar no nível raiz\n  if (Array.isArray(dados.investimentos)) {\n    investimentos = investimentos.concat(dados.investimentos);\n  }\n  // Ou dentro de body\n  if (dados.body && Array.isArray(dados.body.investimentos)) {\n    investimentos = investimentos.concat(dados.body.investimentos);\n  }\n\n  // Se o item já é um cliente direto (tem email ou nome+saldo)\n  if (dados.email || (dados.nome && dados.saldo !== undefined)) {\n    clientes.push(dados);\n  }\n\n  // Se o item já é um investimento direto (tem Produto ou minimo)\n  if (dados.Produto || dados.minimo !== undefined) {\n    investimentos.push(dados);\n  }\n}\n\n// ---------- 2) Funções auxiliares ----------\n\nfunction normalizar(str) {\n  return String(str).normalize(\"NFD\").replace(/[\\u0300-\\u036f]/g, \"\").toLowerCase();\n}\n\nfunction encontrarChave(obj, opcoes) {\n  const chaves = Object.keys(obj);\n  for (const opcao of opcoes) {\n    const alvo = normalizar(opcao);\n    for (const chave of chaves) {\n      if (normalizar(chave).includes(alvo)) return chave;\n    }\n  }\n  return null;\n}\n\nfunction obterValor(obj, opcoes, padrao = \"\") {\n  const chave = encontrarChave(obj, opcoes);\n  return chave && obj[chave] !== null && obj[chave] !== undefined ? obj[chave] : padrao;\n}\n\nfunction paraNumero(valor) {\n  if (typeof valor === \"number\") return valor;\n  if (valor === null || valor === undefined) return 0;\n\n  let s = String(valor).trim();\n  s = s.replace(/R\\$/gi, \"\").replace(/\\s/g, \"\");\n  s = s.replace(/\\./g, \"\").replace(\",\", \".\");\n  const n = parseFloat(s);\n  return Number.isFinite(n) ? n : 0;\n}\n\nfunction formatarMoeda(valor) {\n  const n = paraNumero(valor);\n  return n.toLocaleString(\"pt-BR\", { style: \"currency\", currency: \"BRL\" });\n}\n\nfunction formatarRentabilidade(valor) {\n  if (valor === null || valor === undefined || valor === \"\") return \"informação indisponível\";\n  const s = String(valor).trim();\n  if (s.includes(\"%\")) return s;\n  const n = paraNumero(valor);\n  if (Number.isFinite(n)) {\n    return n.toLocaleString(\"pt-BR\", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + \"%\";\n  }\n  return s;\n}\n\n// ---------- 3) Selecionar produto ideal para cada cliente ----------\n\nfunction selecionarProduto(cliente, listaInvestimentos) {\n  if (!listaInvestimentos.length) return null;\n\n  const perfilCliente = normalizar(obterValor(cliente, [\"perfil\", \"tipo_perfil\"], \"\"));\n  const saldo = paraNumero(obterValor(cliente, [\"saldo\", \"saldo_disponivel\"], 0));\n\n  const compativeis = listaInvestimentos.filter((p) => {\n    const perfilProduto = normalizar(obterValor(p, [\"perfil\", \"tipo_perfil\"], \"\"));\n    const minimo = paraNumero(obterValor(p, [\"minimo\", \"minima\", \"min\"], 0));\n\n    const perfilOk = !perfilCliente || !perfilProduto || perfilCliente === perfilProduto;\n    const saldoOk = saldo >= minimo;\n    return perfilOk && saldoOk;\n  });\n\n  return compativeis[0] || listaInvestimentos[0];\n}\n\n// ---------- 4) Gerar mensagem ----------\n\nfunction gerarMensagem(cliente, produto) {\n  const nome = obterValor(cliente, [\"nome\", \"cliente\", \"nome_cliente\"], \"cliente\");\n  const perfil = obterValor(cliente, [\"perfil\", \"tipo_perfil\"], \"não informado\");\n  const saldoFormatado = formatarMoeda(obterValor(cliente, [\"saldo\", \"saldo_disponivel\"], 0));\n\n  if (!produto) {\n    return `Olá, ${nome}! Identificamos seu perfil ${perfil} e saldo disponível de ${saldoFormatado}. No momento não encontramos um produto recomendado para você.`;\n  }\n\n  const nomeProduto = obterValor(produto, [\"produto\", \"nome_produto\", \"tipo_produto\", \"Produto\"], \"produto\");\n  const rentabilidade = formatarRentabilidade(obterValor(produto, [\"rentabilidade\", \"rendimento\", \"taxa\"], \"\"));\n\n  return `Olá, ${nome}! Com base no seu perfil ${perfil} e saldo disponível de ${saldoFormatado}, recomendamos o produto ${nomeProduto}, com rentabilidade de ${rentabilidade}.`;\n}\n\n// ---------- 5) Retornar um item por cliente com a mensagem ----------\n\nif (clientes.length === 0) {\n  return [{\n    json: {\n      mensagem: \"Nenhum cliente encontrado.\",\n      total_clientes: clientes.length,\n      total_investimentos: investimentos.length,\n      estrutura_recebida: itens.map(i => ({\n        chaves: Object.keys(i.json),\n        exemplo: i.json\n      }))\n    }\n  }];\n}\n\nconst resultado = clientes.map((cliente) => {\n  const produto = selecionarProduto(cliente, investimentos);\n\n  return {\n    json: {\n      ...cliente,\n      mensagem: gerarMensagem(cliente, produto),\n      produto_selecionado: produto ? obterValor(produto, [\"produto\", \"nome_produto\", \"tipo_produto\", \"Produto\"], \"\") : \"\",\n      rentabilidade_selecionada: produto ? obterValor(produto, [\"rentabilidade\", \"rendimento\", \"taxa\"], \"\") : \"\"\n    }\n  };\n});\n\nreturn resultado;\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        656,
+        -128
+      ],
+      "id": "30e20527-e492-41c1-b272-fa6bd8e246e9",
+      "name": "Code in JavaScript1"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Webhook": {
+      "main": [
+        [
+          {
+            "node": "HTTP Request",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Merge",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Respond to Webhook": {
+      "main": [
+        []
+      ]
+    },
+    "HTTP Request": {
+      "main": [
+        [
+          {
+            "node": "Code in JavaScript",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code in JavaScript": {
+      "main": [
+        [
+          {
+            "node": "Merge",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Merge": {
+      "main": [
+        [
+          {
+            "node": "Code in JavaScript1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code in JavaScript1": {
+      "main": [
+        [
+          {
+            "node": "Respond to Webhook",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "versionId": "5b9c8d43-e2d7-411c-9f96-e86f23dd8422",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "22fa9dc0e7b60112ee083ebea28a1e318c8d2f9d33b101a63457d16d1f4a667a"
+  },
+  "nodeGroups": [],
+  "id": "qnipPDfHlBiycfpU",
+  "tags": []
+}
